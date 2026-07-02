@@ -1,0 +1,53 @@
+plugins {
+	id 'java'
+	id 'org.springframework.boot' version '3.5.0'
+	id 'io.spring.dependency-management' version '1.1.7'
+
+}
+
+group = 'com.example'
+version = '0.0.1-SNAPSHOT'
+description = 'Basic calculator MCP service for beginners'
+
+java {
+	toolchain {
+		languageVersion = JavaLanguageVersion.of(21)
+	}
+}
+
+repositories {
+	mavenCentral()
+	// Repositorios para snapshots de Spring AI
+	maven { url 'https://repo.spring.io/milestone' }
+	maven { url 'https://repo.spring.io/snapshot' }
+}
+
+ext {
+	springAiVersion = '1.0.0-SNAPSHOT'
+	springAiVersion = '1.0.0-SNAPSHOT'
+	langchain4jVersion = '1.0.0-beta3'
+}
+
+dependencyManagement {
+	imports {
+		mavenBom "org.springframework.ai:spring-ai-bom:${springAiVersion}"
+	}
+}
+
+dependencies {
+	implementation 'org.springframework.ai:spring-ai-starter-mcp-server-webflux'
+	implementation 'org.springframework.boot:spring-boot-starter-actuator'
+	testImplementation 'org.springframework.boot:spring-boot-starter-test'
+	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+
+
+	// LangChain4j - cliente MCP con LLM
+	implementation "dev.langchain4j:langchain4j-mcp:${langchain4jVersion}"
+	implementation "dev.langchain4j:langchain4j-open-ai-official:${langchain4jVersion}"
+	implementation "dev.langchain4j:langchain4j-github-models:${langchain4jVersion}"
+
+}
+
+tasks.named('test') {
+	useJUnitPlatform()
+}
