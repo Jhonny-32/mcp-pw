@@ -18,7 +18,7 @@ public class LangChain4jClient {
     public static void main(String[] args) throws Exception {        // Configure el LLM para usar modelos de GitHub
         ChatLanguageModel model = OpenAiOfficialChatModel.builder()
                 .isGitHubModels(true)
-                .apiKey("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")
+                .apiKey("")
                 .timeout(Duration.ofSeconds(60))
                 .modelName("gpt-4.1-nano")
                 .build();
