@@ -247,9 +247,19 @@ public class MigrationService {
         }
 
         List<String> notes = new ArrayList<>();
-        // Lists are migrated first, on the raw code: their child-element rule (scoped findElement)
+        // By field/local constants are resolved first so that later steps (findElement/findElements
+        // rewriting) see plain String selectors instead of By-typed variables.
+        String migrated = migrateByFieldConstants(code, notes);
+        // @FindAll combines several @FindBy strategies into one field; it must run before the
+        // how/using normalization and before the single-@FindBy converters, since it consumes
+        // the whole block itself.
+        migrated = migrateFindAll(migrated, notes);
+        // @FindBy(how = How.X, using = "...") is normalized to the shorthand form (id = "...", etc.)
+        // so the existing shorthand converters below handle both styles uniformly.
+        migrated = normalizeFindByHowUsing(migrated, notes);
+        // Lists are migrated next, on the raw code: their child-element rule (scoped findElement)
         // and the get(0)/isEmpty usages must be resolved before the generic conversions run.
-        String migrated = migrateListWebElements(code, notes);
+        migrated = migrateListWebElements(migrated, notes);
         migrated = translateSeleniumApis(migrated, notes);
         migrated = migrateFindBy(migrated, notes);
         migrated = prependMarker(migrated);
@@ -305,18 +315,18 @@ public class MigrationService {
         c = c.replaceAll("\\.sendKeys\\(", ".fill(");
         c = c.replaceAll("\\.getText\\(\\)", ".textContent()");
         c = c.replaceAll("\\.isDisplayed\\(\\)", ".isVisible()");
+        c = c.replaceAll("\\.isSelected\\(\\)", ".isChecked()");
         c = c.replaceAll("\\.getAttribute\\(", ".getAttribute(");
 
-        // Explicit waits -> auto-waiting (flagged with TODO)
+        // Explicit waits -> auto-waiting (flagged with TODO, original statement preserved for review)
         if (c.contains("Thread.sleep")) {
             c = c.replaceAll("(?m)^(\\s*)Thread\\.sleep\\([^;]*\\);",
                     "$1" + TODO + " Thread.sleep removed; Playwright auto-waits. Use assertThat(locator).isVisible() if needed.");
             notes.add("Thread.sleep replaced with TODO (auto-waiting).");
         }
         if (c.contains("WebDriverWait") || c.contains("ExpectedConditions")) {
-            c = c.replaceAll("(?m)^(\\s*).*(WebDriverWait|ExpectedConditions).*$",
-                    "$1" + TODO + " Selenium explicit wait removed; use auto-waiting / assertThat(locator).");
-            notes.add("WebDriverWait/ExpectedConditions flagged as TODO (auto-waiting).");
+            c = flagStatementsContaining(c, notes, "(?:WebDriverWait|ExpectedConditions)",
+                    "Selenium explicit wait removed; use auto-waiting / assertThat(locator).");
         }
 
         // Patterns without a direct equivalent
@@ -326,11 +336,30 @@ public class MigrationService {
         if (c.contains("JavascriptExecutor")) {
             notes.add(TODO + " JavascriptExecutor detected: migrate to page.evaluate(...).");
         }
-        if (c.contains("switchTo")) {
-            c = c.replaceAll("\\w+\\.switchTo\\(\\)\\.frame\\(",
-                    TODO + " use page.frameLocator(...) -> frameLocator(");
-            notes.add(TODO + " switchTo().frame migrated to frameLocator (review manually).");
+        if (c.contains("defaultContent")) {
+            c = c.replaceAll("(?m)^(\\s*)\\w+\\.switchTo\\(\\)\\.defaultContent\\(\\)\\s*;",
+                    "$1" + TODO + " switchTo().defaultContent() removed; page/frameLocator() calls are already "
+                            + "independent in Playwright, no implicit context switch is needed.");
+            notes.add(TODO + " switchTo().defaultContent() call(s) removed (no Playwright equivalent needed).");
         }
+        if (c.contains("switchTo()")) {
+            c = flagStatementsContaining(c, notes, "\\w+\\.switchTo\\(\\)\\.frame\\(",
+                    "switchTo().frame(...) has no direct Playwright equivalent; use page.frameLocator(<selector>) "
+                            + "or a nested frameLocator(...) chain.");
+        }
+        // Custom automation-utility helpers with no direct Playwright equivalent: flagged for
+        // manual review instead of guessed at, since their implementation is outside this project.
+        c = flagUnmappedHelper(c, notes, "GUIAutomationUtilities.clickUntilDisappear",
+                "custom retry-click helper; Playwright auto-waits, consider locator.click() (default timeout) "
+                        + "or assertThat(locator).isHidden().");
+        c = flagUnmappedHelper(c, notes, "GUIAutomationUtilities.clickUntilObjectAppear",
+                "custom retry-click helper; consider locator.click() followed by "
+                        + "assertThat(otherLocator).isVisible().");
+        c = flagUnmappedHelper(c, notes, "GUIAutomationUtilities.scrollToObject",
+                "manual scroll helper; Playwright auto-scrolls into view on interaction, this call can likely "
+                        + "be deleted.");
+        c = flagUnmappedHelper(c, notes, "GUIAutomationUtilities.switchToBrowserWindowByIndex",
+                "window-switching helper; use BrowserContext.pages() / page.waitForPopup() in Playwright.");
         // <select> dropdown: org.openqa.selenium.support.ui.Select has no Playwright equivalent.
         // The <select> is already a Locator -> use Locator.selectOption(...) and web-first assertions.
         c = migrateSelectDropdown(c, notes);
@@ -404,11 +433,227 @@ public class MigrationService {
         return c;
     }
 
+    /**
+     * Normalizes {@code @FindBy(how = How.ID, using = "value")} to the shorthand form
+     * {@code @FindBy(id = "value")} so the rest of the pipeline (single field, list field) only has
+     * to understand one annotation shape.
+     */
+    private String normalizeFindByHowUsing(String code, List<String> notes) {
+        Pattern p = Pattern.compile(
+                "@FindBy\\(\\s*how\\s*=\\s*How\\.(ID|CLASS_NAME|CSS|NAME|XPATH|LINK_TEXT|PARTIAL_LINK_TEXT|"
+                        + "TAG_NAME|ID_OR_NAME)\\s*,\\s*using\\s*=\\s*\"([^\"]+)\"\\s*\\)");
+        Matcher m = p.matcher(code);
+        StringBuilder sb = new StringBuilder();
+        int count = 0;
+        while (m.find()) {
+            String how = m.group(1);
+            String value = m.group(2);
+            if ("ID_OR_NAME".equals(how)) {
+                notes.add(TODO + " @FindBy(how = How.ID_OR_NAME, using = \"" + value + "\") mapped to an id-only "
+                        + "selector; verify manually if the element is actually located by its name attribute.");
+            }
+            String replacement = "@FindBy(" + howEnumToShorthandKey(how) + " = \"" + value + "\")";
+            m.appendReplacement(sb, Matcher.quoteReplacement(replacement));
+            count++;
+        }
+        m.appendTail(sb);
+        if (count > 0) {
+            notes.add("Normalized " + count + " @FindBy(how = How.X, using = \"...\") annotations to shorthand form.");
+        }
+        return sb.toString();
+    }
+
+    private String howEnumToShorthandKey(String how) {
+        return switch (how) {
+            case "ID", "ID_OR_NAME" -> "id";
+            case "CLASS_NAME" -> "className";
+            case "CSS" -> "css";
+            case "NAME" -> "name";
+            case "XPATH" -> "xpath";
+            case "LINK_TEXT", "PARTIAL_LINK_TEXT" -> "linkText";
+            case "TAG_NAME" -> "tagName";
+            default -> "css";
+        };
+    }
+
+    /**
+     * Migrates {@code @FindAll({@FindBy(...), @FindBy(...)})} fields (match-any-of-these-locators)
+     * into a single {@code Locator} field chained with {@code .or(...)}, which is Playwright's
+     * equivalent of "the first strategy that matches". Runs before {@link #normalizeFindByHowUsing}
+     * since it consumes the whole block itself; understands both the shorthand and how/using
+     * @FindBy forms inside the block.
+     */
+    private String migrateFindAll(String code, List<String> notes) {
+        Pattern block = Pattern.compile(
+                "@FindAll\\(\\s*\\{(.*?)\\}\\s*\\)\\s*((?:private|public|protected)\\s+)?WebElement\\s+(\\w+)\\s*;",
+                Pattern.DOTALL);
+        Pattern howUsing = Pattern.compile(
+                "@FindBy\\(\\s*how\\s*=\\s*How\\.(\\w+)\\s*,\\s*using\\s*=\\s*\"([^\"]+)\"\\s*\\)");
+        Pattern shorthand = Pattern.compile(
+                "@FindBy\\(\\s*(id|css|name|className|xpath|linkText|tagName)\\s*=\\s*\"([^\"]+)\"\\s*\\)");
+
+        Matcher m = block.matcher(code);
+        StringBuilder sb = new StringBuilder();
+        int fieldCount = 0;
+        while (m.find()) {
+            String inner = m.group(1);
+            String modifier = m.group(2) == null ? "" : m.group(2);
+            String name = m.group(3);
+
+            List<String> selectors = new ArrayList<>();
+            Matcher hu = howUsing.matcher(inner);
+            while (hu.find()) selectors.add(toSelector(howEnumToShorthandKey(hu.group(1)), hu.group(2)));
+            Matcher sh = shorthand.matcher(inner);
+            while (sh.find()) selectors.add(toSelector(sh.group(1), sh.group(2)));
+
+            if (selectors.isEmpty()) {
+                // Unrecognized @FindBy shape inside @FindAll: leave untouched and flag for manual review.
+                notes.add(TODO + " @FindAll for field '" + name + "' could not be parsed automatically; "
+                        + "convert manually to page.locator(...).or(...).");
+                continue;
+            }
+            StringBuilder expr = new StringBuilder("page.locator(\"" + javaStringLiteral(selectors.get(0)) + "\")");
+            for (int i = 1; i < selectors.size(); i++) {
+                expr.append(".or(page.locator(\"").append(javaStringLiteral(selectors.get(i))).append("\"))");
+            }
+            String replacement = modifier + "Locator " + name + " = " + expr + ";";
+            m.appendReplacement(sb, Matcher.quoteReplacement(replacement));
+            fieldCount++;
+        }
+        m.appendTail(sb);
+        if (fieldCount > 0) {
+            notes.add("Migrated " + fieldCount + " @FindAll field(s) to Locator fields chained with .or(...).");
+            notes.add(TODO + " add a 'private final Page page;' field initialized by the constructor for the "
+                    + "@FindAll-derived Locator field(s) above.");
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Converts {@code By} field/local constants (e.g. {@code private By by_btn_Cancel = By.id("x");}) to
+     * plain {@code String} selector constants with the same name. This lets the generic
+     * {@code findElement}/{@code findElements} rewriting in {@link #translateSeleniumApis} keep working
+     * unchanged at call sites such as {@code driver.findElement(by_btn_Cancel)}, since the variable is
+     * still a valid single argument, just String-typed instead of By-typed.
+     */
+    private String migrateByFieldConstants(String code, List<String> notes) {
+        Pattern p = Pattern.compile(
+                "((?:(?:private|public|protected|static|final)\\s+)*)By\\s+(\\w+)\\s*=\\s*By\\."
+                        + "(id|cssSelector|className|name|tagName|xpath|linkText|partialLinkText)\\(\\s*\"([^\"]+)\"\\s*\\)\\s*;");
+        Matcher m = p.matcher(code);
+        StringBuilder sb = new StringBuilder();
+        int count = 0;
+        while (m.find()) {
+            String modifiers = m.group(1);
+            String name = m.group(2);
+            String strategy = shorthandStrategyKey(m.group(3));
+            String value = m.group(4);
+            String selector = toSelector(strategy, value);
+            String replacement = modifiers + "String " + name + " = \"" + javaStringLiteral(selector) + "\";";
+            m.appendReplacement(sb, Matcher.quoteReplacement(replacement));
+            count++;
+        }
+        m.appendTail(sb);
+        if (count > 0) {
+            notes.add("Converted " + count + " By field constant(s) to String selector constants "
+                    + "(usages via driver.findElement(name)/findElements(name) keep compiling).");
+        }
+        return sb.toString();
+    }
+
+    /** Maps the By.xxx() factory method name to the shorthand strategy key used by {@link #toSelector}. */
+    private String shorthandStrategyKey(String byFactoryMethod) {
+        return switch (byFactoryMethod) {
+            case "cssSelector" -> "css";
+            case "partialLinkText" -> "linkText";
+            default -> byFactoryMethod; // id, className, name, tagName, xpath, linkText already match
+        };
+    }
+
+    /**
+     * Replaces whole Java statements containing {@code keywordPattern} with a single-line TODO
+     * comment that preserves the original statement text (whitespace-collapsed), instead of
+     * discarding it. Operates on the full statement span (from the previous {@code ; { }} up to the
+     * next {@code ;}) rather than per physical line, so long calls that wrap across several lines
+     * (very common for the explicit-wait wrappers in this codebase) are not cut mid-statement, which
+     * would otherwise leave an unclosed '(' and break compilation.
+     */
+    private String flagStatementsContaining(String code, List<String> notes, String keywordPattern, String hint) {
+        Matcher km = Pattern.compile(keywordPattern).matcher(code);
+        List<int[]> spans = new ArrayList<>(); // {indentStart, contentStart, statementEnd}
+        int searchFrom = 0;
+        while (searchFrom <= code.length() && km.find(searchFrom)) {
+            int idx = km.start();
+            int boundary = lastStatementBoundary(code, idx);
+            int indentStart = boundary + 1;
+            while (indentStart < code.length() && (code.charAt(indentStart) == '\n' || code.charAt(indentStart) == '\r')) {
+                indentStart++;
+            }
+            int contentStart = indentStart;
+            while (contentStart < code.length() && (code.charAt(contentStart) == ' ' || code.charAt(contentStart) == '\t')) {
+                contentStart++;
+            }
+            int semi = code.indexOf(';', idx);
+            int stmtEnd = semi < 0 ? code.length() : semi + 1;
+            if (stmtEnd <= contentStart) { searchFrom = idx + 1; continue; }
+            spans.add(new int[]{indentStart, contentStart, stmtEnd});
+            searchFrom = stmtEnd;
+        }
+        if (spans.isEmpty()) return code;
+
+        StringBuilder sb = new StringBuilder();
+        int last = 0;
+        for (int[] span : spans) {
+            sb.append(code, last, span[0]);
+            String indent = code.substring(span[0], span[1]);
+            String original = code.substring(span[1], span[2]).trim().replaceAll("\\s+", " ");
+            sb.append(indent).append(TODO).append(' ').append(hint).append(" Original: ").append(original);
+            last = span[2];
+        }
+        sb.append(code, last, code.length());
+        notes.add(TODO + " " + spans.size() + " statement(s) flagged: " + hint);
+        return sb.toString();
+    }
+
+    /** Index of the last {@code ; { }} strictly before {@code beforeIndex}, or -1 if none. */
+    private int lastStatementBoundary(String code, int beforeIndex) {
+        for (int i = beforeIndex - 1; i >= 0; i--) {
+            char c = code.charAt(i);
+            if (c == ';' || c == '{' || c == '}') return i;
+        }
+        return -1;
+    }
+
+    /**
+     * Flags statements calling a custom automation-utility helper ({@code needle}) that has no direct
+     * Playwright equivalent, by inserting a TODO comment line above the statement. The original
+     * statement is left untouched (unlike {@link #flagStatementsContaining}) because these helpers
+     * live outside this project and a safe rewrite cannot be guessed.
+     */
+    private String flagUnmappedHelper(String code, List<String> notes, String needle, String hint) {
+        if (!code.contains(needle)) return code;
+        Pattern p = Pattern.compile("(?m)^(\\s*)(.*" + Pattern.quote(needle) + ".*)$");
+        Matcher m = p.matcher(code);
+        StringBuilder sb = new StringBuilder();
+        int count = 0;
+        while (m.find()) {
+            String indent = m.group(1);
+            String replacement = indent + TODO + " " + hint + "\n" + m.group(0);
+            m.appendReplacement(sb, Matcher.quoteReplacement(replacement));
+            count++;
+        }
+        m.appendTail(sb);
+        if (count > 0) {
+            notes.add(TODO + " " + count + " call(s) to " + needle + " flagged (" + hint + ").");
+        }
+        return sb.toString();
+    }
+
     /** Converts {@code @FindBy ... WebElement x;} fields into {@code Locator x = page.locator(...)} fields. */
     private String migrateFindBy(String code, List<String> notes) {
         // @FindBy(id = "x") private WebElement name;  -> Locator field
         Pattern p = Pattern.compile(
-                "@FindBy\\(\\s*(id|css|name|className|xpath|linkText)\\s*=\\s*\"([^\"]+)\"\\s*\\)\\s*"
+                "@FindBy\\(\\s*(id|css|name|className|xpath|linkText|tagName)\\s*=\\s*\"([^\"]+)\"\\s*\\)\\s*"
                         + "((?:private|public|protected)\\s+)?WebElement\\s+(\\w+)\\s*;");
         Matcher m = p.matcher(code);
         StringBuilder sb = new StringBuilder();
@@ -419,7 +664,7 @@ public class MigrationService {
             String modifier = m.group(3) == null ? "" : m.group(3);
             String name = m.group(4);
             String selector = toSelector(how, value);
-            String replacement = modifier + "Locator " + name + " = page.locator(\"" + selector + "\");";
+            String replacement = modifier + "Locator " + name + " = page.locator(\"" + javaStringLiteral(selector) + "\");";
             m.appendReplacement(sb, Matcher.quoteReplacement(replacement));
             count++;
         }
@@ -442,13 +687,38 @@ public class MigrationService {
 
     private String toSelector(String how, String value) {
         return switch (how) {
-            case "id" -> "#" + value;
-            case "className" -> "." + value;
-            case "name" -> "[name='" + value + "']";
+            case "id" -> "#" + escapeCssToken(value);
+            case "className" -> "." + escapeCssToken(value);
+            case "name" -> "[name='" + value.replace("'", "\\'") + "']";
             case "xpath" -> "xpath=" + value;
             case "linkText" -> "text=" + value;
-            default -> value; // css
+            case "idOrName" -> "#" + escapeCssToken(value) + ", [name='" + value.replace("'", "\\'") + "']";
+            default -> value; // css, tagName
         };
+    }
+
+    /**
+     * Escapes CSS special characters in an id/class token so it stays a valid selector.
+     * Selenium accepted these raw (e.g. {@code "cat:businessProfileHeading"}); Playwright's
+     * {@code page.locator(...)} parses them as CSS, where an un-escaped ':' or '.' changes meaning.
+     */
+    private String escapeCssToken(String raw) {
+        StringBuilder sb = new StringBuilder();
+        for (char ch : raw.toCharArray()) {
+            if (":.#[](),/ +~>*=\"'&|^$".indexOf(ch) >= 0) sb.append('\\');
+            sb.append(ch);
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Escapes a selector value (which may now contain the backslashes {@link #escapeCssToken} added)
+     * so it stays a valid Java string literal when written into the generated source file. Without
+     * this, a CSS escape like {@code \:} becomes an illegal Java escape sequence and the migrated
+     * file fails to compile.
+     */
+    private String javaStringLiteral(String value) {
+        return value.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
     /**
@@ -487,6 +757,8 @@ public class MigrationService {
 
     /** Builds the selector expression for a dynamic locator, preserving the strategy prefix. */
     private String toDynamicSelectorExpr(String how, String arg) {
+        // Note: id/className prefixes are concatenated as-is; if the runtime value can contain CSS
+        // special characters (':', '.', etc.) it must be escaped by the caller, same as escapeCssToken.
         return switch (how) {
             case "id" -> "\"#\" + " + arg;
             case "className" -> "\".\" + " + arg;
@@ -504,7 +776,7 @@ public class MigrationService {
     private String migrateListWebElements(String code, List<String> notes) {
         // 1) Eager field @FindBy ... List<WebElement> name; -> lazy accessor public Locator name()
         Pattern field = Pattern.compile(
-                "@FindBy\\(\\s*(id|css|className|xpath)\\s*=\\s*\"([^\"]+)\"\\s*\\)\\s*"
+                "@FindBy\\(\\s*(id|css|className|xpath|name|linkText|tagName)\\s*=\\s*\"([^\"]+)\"\\s*\\)\\s*"
                         + "(?:private|public|protected)?\\s*List<WebElement>\\s+(\\w+)\\s*;");
         Matcher m = field.matcher(code);
         StringBuilder sb = new StringBuilder();
@@ -514,7 +786,7 @@ public class MigrationService {
             String name = m.group(3);
             String accessor = "/** All elements matching \"" + selector + "\". */\n"
                     + "    public Locator " + name + "() {\n"
-                    + "        return page.locator(\"" + selector + "\");\n"
+                    + "        return page.locator(\"" + javaStringLiteral(selector) + "\");\n"
                     + "    }";
             m.appendReplacement(sb, Matcher.quoteReplacement(accessor));
             names.add(name);
@@ -580,11 +852,7 @@ public class MigrationService {
 
     /** Selector conversion for list fields (xpath/css pass through as-is; page.locator accepts them). */
     private String toListSelector(String how, String value) {
-        return switch (how) {
-            case "id" -> "#" + value;
-            case "className" -> "." + value;
-            default -> value; // css, xpath -> as-is
-        };
+        return toSelector(how, value);
     }
 
     private String addImportAfterPackage(String code, String importLine) {
@@ -608,7 +876,12 @@ public class MigrationService {
                 {"WebDriverWait", "explicit wait -> auto-waiting"},
                 {"ExpectedConditions", "explicit wait -> auto-waiting"},
                 {"Thread.sleep", "fixed sleep -> remove"},
-                {"switchTo()", "switchTo -> frameLocator/window"}}) {
+                {"switchTo()", "switchTo -> frameLocator/window"},
+                {"@FindAll(", "combined locator strategy -> Locator.or(...)"},
+                {"how = How.", "@FindBy(how=,using=) style -> normalized to shorthand"},
+                {".isSelected()", "checkbox/radio state -> Locator.isChecked()"},
+                {"GUIAutomationUtilities.", "custom automation helper -> needs manual review"},
+                {"UtilitiesIAP.expectingByCondition", "custom explicit-wait wrapper -> needs manual review"}}) {
             if (code.contains(pat[0])) {
                 ObjectNode n = json.createObjectNode();
                 n.put("file", rel);
