@@ -140,7 +140,8 @@ public class MigrationService {
     // ------------------------------------------------------------------
     @Tool(description = "Migrates a whole Page Object class to Playwright: @FindBy/PageFactory->Locator, " +
             "List<WebElement> fields->Locator accessor (get(0)->first(), isEmpty()->assertThat(...).isVisible(), " +
-            "child findElement->scoped locator), dynamic locators (By->page.locator), Select dropdown->selectOption, " +
+            "child findElement->scoped locator), By field constants->Locator fields with rewritten call sites, " +
+            "dynamic locators (By->page.locator), Select dropdown->selectOption, " +
             "translates actions, removes explicit waits and manual scroll, and flags anything without a direct " +
             "equivalent with TODO MIGRATION.")
     public String convertPageObject(String filePath) {
@@ -247,8 +248,9 @@ public class MigrationService {
         }
 
         List<String> notes = new ArrayList<>();
-        // By field/local constants are resolved first so that later steps (findElement/findElements
-        // rewriting) see plain String selectors instead of By-typed variables.
+        // By field/local constants are resolved first: they become Locator fields and their
+        // findElement/findElements call sites are rewritten here, before the generic rewriting in
+        // translateSeleniumApis would turn them into invalid page.locator(<Locator>) calls.
         String migrated = migrateByFieldConstants(code, notes);
         // @FindAll combines several @FindBy strategies into one field; it must run before the
         // how/using normalization and before the single-@FindBy converters, since it consumes
@@ -531,10 +533,13 @@ public class MigrationService {
 
     /**
      * Converts {@code By} field/local constants (e.g. {@code private By by_btn_Cancel = By.id("x");}) to
-     * plain {@code String} selector constants with the same name. This lets the generic
-     * {@code findElement}/{@code findElements} rewriting in {@link #translateSeleniumApis} keep working
-     * unchanged at call sites such as {@code driver.findElement(by_btn_Cancel)}, since the variable is
-     * still a valid single argument, just String-typed instead of By-typed.
+     * {@code Locator} fields ({@code private Locator by_btn_Cancel = page.locator("#x");}) and rewrites
+     * their call sites ({@code driver.findElement(by_btn_Cancel).click()} becomes
+     * {@code by_btn_Cancel.click()}), which is the idiomatic Playwright shape.
+     *
+     * <p>Static constants are the exception: there is no {@code page} instance in a static context, so
+     * they fall back to {@code String} selector constants (usable later as {@code page.locator(name)})
+     * and are flagged with a TODO.
      */
     private String migrateByFieldConstants(String code, List<String> notes) {
         Pattern p = Pattern.compile(
@@ -542,23 +547,60 @@ public class MigrationService {
                         + "(id|cssSelector|className|name|tagName|xpath|linkText|partialLinkText)\\(\\s*\"([^\"]+)\"\\s*\\)\\s*;");
         Matcher m = p.matcher(code);
         StringBuilder sb = new StringBuilder();
-        int count = 0;
+        List<String> locatorFields = new ArrayList<>();
+        int staticCount = 0;
         while (m.find()) {
             String modifiers = m.group(1);
             String name = m.group(2);
             String strategy = shorthandStrategyKey(m.group(3));
             String value = m.group(4);
             String selector = toSelector(strategy, value);
-            String replacement = modifiers + "String " + name + " = \"" + javaStringLiteral(selector) + "\";";
+            String replacement;
+            if (modifiers.contains("static")) {
+                replacement = modifiers + "String " + name + " = \"" + javaStringLiteral(selector) + "\";";
+                staticCount++;
+            } else {
+                replacement = modifiers + "Locator " + name + " = page.locator(\""
+                        + javaStringLiteral(selector) + "\");";
+                locatorFields.add(name);
+            }
             m.appendReplacement(sb, Matcher.quoteReplacement(replacement));
-            count++;
         }
         m.appendTail(sb);
-        if (count > 0) {
-            notes.add("Converted " + count + " By field constant(s) to String selector constants "
-                    + "(usages via driver.findElement(name)/findElements(name) keep compiling).");
+        String c = sb.toString();
+
+        // Call sites of the new Locator fields: X.findElement(name) / X.findElements(name) -> name.
+        // Must happen here, before translateSeleniumApis rewrites them into page.locator(name),
+        // which would not compile against a Locator-typed argument.
+        boolean scopedReceiver = false;
+        for (String name : locatorFields) {
+            Pattern call = Pattern.compile("(\\w+)\\.findElements?\\(\\s*" + Pattern.quote(name) + "\\s*\\)");
+            Matcher cm = call.matcher(c);
+            StringBuilder csb = new StringBuilder();
+            while (cm.find()) {
+                if (!"driver".equals(cm.group(1))) scopedReceiver = true;
+                cm.appendReplacement(csb, Matcher.quoteReplacement(name));
+            }
+            cm.appendTail(csb);
+            c = csb.toString();
         }
-        return sb.toString();
+
+        if (!locatorFields.isEmpty()) {
+            notes.add("Converted " + locatorFields.size() + " By field constant(s) to Locator fields "
+                    + "(page.locator(...)); findElement(name)/findElements(name) call sites rewritten to the field itself.");
+            notes.add(TODO + " 'Locator x = page.locator(...)' fields require 'page' to be assigned before they are "
+                    + "initialized; if you assign 'page' in the constructor body, initialize the locators inside the "
+                    + "constructor too (after page) to avoid a NullPointerException.");
+            if (scopedReceiver) {
+                notes.add(TODO + " some findElement(<By constant>) call(s) had a non-driver receiver; the new "
+                        + "Locator field is page-scoped, review whether element-scoped lookup was intended.");
+            }
+        }
+        if (staticCount > 0) {
+            notes.add(TODO + " " + staticCount + " static By constant(s) converted to String selectors (no 'page' "
+                    + "available in a static context); their usages become page.locator(<name>).");
+        }
+        return c;
     }
 
     /** Maps the By.xxx() factory method name to the shorthand strategy key used by {@link #toSelector}. */
