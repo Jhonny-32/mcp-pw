@@ -81,11 +81,15 @@ class MigrationServiceTest {
         assertTrue(migrated.contains("Locator lbl_FullName = page.locator(\"#cat\\\\:customerName\").or(page.locator(\"#cat\\\\:businessName\"));"),
                 "@FindAll was not converted to a Locator.or(...) chain");
 
-        // By field constants -> String selector constants, usages keep compiling unchanged
-        assertTrue(migrated.contains("String by_btn_Cancel = \"#btnCancel\";"),
-                "By field constant was not converted to a String selector constant");
-        assertTrue(migrated.contains("page.locator(by_btn_Cancel)"),
-                "findElement(by_btn_Cancel) call site was not rewritten to page.locator(by_btn_Cancel)");
+        // By field constants -> Locator fields; call sites use the field directly
+        assertTrue(migrated.contains("Locator by_btn_Cancel = page.locator(\"#btnCancel\");"),
+                "By field constant was not converted to a Locator field");
+        assertTrue(migrated.contains("Locator by_chk_Supplementary = page.locator(\"xpath=//input[@id='chkSupp']\");"),
+                "xpath By field constant was not converted to a Locator field");
+        assertTrue(migrated.contains("by_btn_Cancel.click()"),
+                "findElement(by_btn_Cancel) call site was not rewritten to the Locator field itself");
+        assertFalse(migrated.contains("page.locator(by_btn_Cancel)"),
+                "findElement(by_btn_Cancel) must not become page.locator(<Locator>) — that does not compile");
 
         // isSelected() -> isChecked()
         assertTrue(migrated.contains(".isChecked()"), "isSelected() was not mapped to isChecked()");
