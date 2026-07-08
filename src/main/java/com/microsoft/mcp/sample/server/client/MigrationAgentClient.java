@@ -19,7 +19,7 @@ import java.util.Scanner;
  * Interactive LLM agent (03-GettingStarted/03-llm-client pattern) wired to the
  * Selenium -> Playwright migration tools of this MCP server.
  *
- * <p>Unlike {@link LangChain4jClient} (fixed calculator prompts), this client keeps a
+ * <p>Unlike {@link SDKClient} (fixed one-shot calls), this client keeps a
  * conversation loop with chat memory, so multi-step migrations work naturally:
  * "escanea C:/mi/proyecto" -> "migra todos los page objects" -> "verifica la compilacion".
  *
