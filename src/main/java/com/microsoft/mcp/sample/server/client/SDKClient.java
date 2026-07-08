@@ -5,22 +5,29 @@ import io.modelcontextprotocol.client.McpClient;
 import io.modelcontextprotocol.client.transport.WebFluxSseClientTransport;
 import io.modelcontextprotocol.spec.McpClientTransport;
 
+import java.time.Duration;
 import java.util.Map;
 
 /**
- * Cliente MCP de ejemplo (patron 03-GettingStarted/02-client) apuntado a las
- * herramientas de migracion Selenium -> Playwright de este servidor.
+ * Cliente MCP de consola (patron 03-GettingStarted/02-client de mcp-for-beginners)
+ * apuntado a las herramientas de migracion Selenium -> Playwright de este servidor.
  *
- * <p>Uso: {@code ./gradlew runSdkClient [-PscanPath=C:/ruta/al/proyecto-selenium]}
- * (el servidor debe estar corriendo: {@code ./gradlew bootRun}). Sin argumento,
- * escanea el directorio actual.
+ * <p>Permite ejecutar el flujo completo de migracion desde consola, sin LLM
+ * (el servidor debe estar corriendo: {@code ./gradlew bootRun}):
+ * <pre>
+ *   ./gradlew runSdkClient -PscanPath=C:/ruta/al/proyecto     (inventario, solo lectura)
+ *   ./gradlew runSdkClient -PconvertFile=C:/ruta/A/Page.java  (migra el archivo EN EL SITIO)
+ *   ./gradlew runSdkClient -PverifyPath=C:/ruta/al/proyecto   (compila y reporta residuos)
+ * </pre>
+ * Sin propiedades, escanea el directorio actual.
  */
 public class SDKClient {
 
     public static void main(String[] args) {
-        String projectPath = args.length > 0 ? args[0] : ".";
+        String tool = args.length > 0 ? args[0] : "scan";
+        String value = args.length > 1 ? args[1] : ".";
         var transport = new WebFluxSseClientTransport(WebClient.builder().baseUrl("http://localhost:8081"));
-        new SDKClient(transport).run(projectPath);
+        new SDKClient(transport).run(tool, value);
     }
 
     private final McpClientTransport transport;
@@ -29,8 +36,11 @@ public class SDKClient {
         this.transport = transport;
     }
 
-    public void run(String projectPath) {
-        var client = McpClient.sync(this.transport).build();
+    public void run(String tool, String value) {
+        // Timeout largo: verifyCompilation compila el proyecto destino y puede tardar minutos.
+        var client = McpClient.sync(this.transport)
+                .requestTimeout(Duration.ofMinutes(10))
+                .build();
         client.initialize();
 
         McpSchema.ListToolsResult toolsList = client.listTools();
@@ -38,9 +48,32 @@ public class SDKClient {
 
         client.ping();
 
-        // scanSeleniumProject es de solo lectura: inventario de migracion del proyecto destino
-        McpSchema.CallToolResult scanResult = client.callTool(
-                new McpSchema.CallToolRequest("scanSeleniumProject", Map.of("projectPath", projectPath)));
-        System.out.println("Scan Result = " + scanResult);
+        McpSchema.CallToolRequest request = switch (tool) {
+            case "scan" -> new McpSchema.CallToolRequest("scanSeleniumProject", Map.of("projectPath", value));
+            case "convert" -> new McpSchema.CallToolRequest("convertPageObject", Map.of("filePath", value));
+            case "verify" -> new McpSchema.CallToolRequest("verifyCompilation", Map.of("projectPath", value));
+            default -> throw new IllegalArgumentException(
+                    "Herramienta desconocida: " + tool + " (use scan | convert | verify)");
+        };
+        McpSchema.CallToolResult result = client.callTool(request);
+        printResult(tool, result);
+    }
+
+    /** Imprime el texto del resultado des-escapado, legible en consola. */
+    private void printResult(String tool, McpSchema.CallToolResult result) {
+        System.out.println("=== " + tool + (Boolean.TRUE.equals(result.isError()) ? " (ERROR)" : "") + " ===");
+        for (McpSchema.Content content : result.content()) {
+            if (content instanceof McpSchema.TextContent text) {
+                // El servidor devuelve el String del tool serializado como JSON ("...\n...");
+                // se des-escapa para mostrarlo con saltos de linea reales.
+                String t = text.text();
+                if (t != null && t.startsWith("\"") && t.endsWith("\"")) {
+                    t = t.substring(1, t.length() - 1).replace("\\n", "\n").replace("\\\"", "\"");
+                }
+                System.out.println(t);
+            } else {
+                System.out.println(content);
+            }
+        }
     }
 }

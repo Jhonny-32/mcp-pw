@@ -55,16 +55,23 @@ tasks.named('test') {
 // Equivalente Gradle del "./mvnw exec:java -Dexec.mainClass=...SDKClient" del tutorial
 // 03-GettingStarted/02-client (mcp-for-beginners): ejecuta el cliente MCP contra el
 // servidor local (debe estar corriendo: ./gradlew bootRun).
-// Uso: ./gradlew runSdkClient [-PscanPath=C:/ruta/al/proyecto-selenium]
-// Nota: NO usar 'projectPath' como nombre de la propiedad -P; colisiona con la
-// propiedad interna de Gradle Project.projectPath (":" para el proyecto raiz).
+// Uso (flujo completo de migracion desde consola, sin LLM):
+//   ./gradlew runSdkClient -PscanPath=C:/ruta/al/proyecto     -> scanSeleniumProject
+//   ./gradlew runSdkClient -PconvertFile=C:/ruta/A/Page.java  -> convertPageObject (modifica el archivo)
+//   ./gradlew runSdkClient -PverifyPath=C:/ruta/al/proyecto   -> verifyCompilation
+// Nota: NO usar 'projectPath'/'path' como nombre de propiedad -P; colisionan con
+// propiedades internas de Gradle (Project.projectPath/path = ":" para el proyecto raiz).
 tasks.register('runSdkClient', JavaExec) {
 	group = 'application'
 	description = 'Ejecuta el cliente MCP (SDKClient) contra el servidor en localhost:8081'
 	classpath = sourceSets.main.runtimeClasspath
 	mainClass = 'com.microsoft.mcp.sample.server.client.SDKClient'
-	if (project.hasProperty('scanPath')) {
-		args = [project.property('scanPath')]
+	if (project.hasProperty('convertFile')) {
+		args = ['convert', project.property('convertFile')]
+	} else if (project.hasProperty('verifyPath')) {
+		args = ['verify', project.property('verifyPath')]
+	} else if (project.hasProperty('scanPath')) {
+		args = ['scan', project.property('scanPath')]
 	}
 }
 
