@@ -7,11 +7,20 @@ import io.modelcontextprotocol.spec.McpClientTransport;
 
 import java.util.Map;
 
+/**
+ * Cliente MCP de ejemplo (patron 03-GettingStarted/02-client) apuntado a las
+ * herramientas de migracion Selenium -> Playwright de este servidor.
+ *
+ * <p>Uso: {@code ./gradlew runSdkClient [-PscanPath=C:/ruta/al/proyecto-selenium]}
+ * (el servidor debe estar corriendo: {@code ./gradlew bootRun}). Sin argumento,
+ * escanea el directorio actual.
+ */
 public class SDKClient {
 
     public static void main(String[] args) {
+        String projectPath = args.length > 0 ? args[0] : ".";
         var transport = new WebFluxSseClientTransport(WebClient.builder().baseUrl("http://localhost:8081"));
-        new SDKClient(transport).run();
+        new SDKClient(transport).run(projectPath);
     }
 
     private final McpClientTransport transport;
@@ -20,7 +29,7 @@ public class SDKClient {
         this.transport = transport;
     }
 
-    public void run() {
+    public void run(String projectPath) {
         var client = McpClient.sync(this.transport).build();
         client.initialize();
 
@@ -29,19 +38,9 @@ public class SDKClient {
 
         client.ping();
 
-        McpSchema.CallToolResult resultAdd = client.callTool(new McpSchema.CallToolRequest("add", Map.of("a", 5.0, "b", 3.0)));
-        System.out.println("Add Result = " + resultAdd);
-
-        McpSchema.CallToolResult resultSubtract = client.callTool(new McpSchema.CallToolRequest("subtract", Map.of("a", 10.0, "b", 4.0)));
-        System.out.println("Subtract Result = " + resultSubtract);
-
-        McpSchema.CallToolResult resultMultiply = client.callTool(new McpSchema.CallToolRequest("multiply", Map.of("a", 6.0, "b", 7.0)));
-        System.out.println("Multiply Result = " + resultMultiply);
-
-        McpSchema.CallToolResult resultDivide = client.callTool(new McpSchema.CallToolRequest("divide", Map.of("a", 20.0, "b", 4.0)));
-        System.out.println("Divide Result = " + resultDivide);
-
-        McpSchema.CallToolResult resultHelp = client.callTool(new McpSchema.CallToolRequest("help", Map.of()));
-        System.out.println("Help = " + resultHelp);
+        // scanSeleniumProject es de solo lectura: inventario de migracion del proyecto destino
+        McpSchema.CallToolResult scanResult = client.callTool(
+                new McpSchema.CallToolRequest("scanSeleniumProject", Map.of("projectPath", projectPath)));
+        System.out.println("Scan Result = " + scanResult);
     }
 }

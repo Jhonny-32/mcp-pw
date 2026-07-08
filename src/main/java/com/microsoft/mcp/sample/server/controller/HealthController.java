@@ -16,7 +16,7 @@ public class HealthController {
         Map<String, Object> response = new HashMap<>();
         response.put("status", "UP");
         response.put("timestamp", LocalDateTime.now().toString());
-        response.put("service", "Calculator MCP Server");
+        response.put("service", "Selenium to Playwright Migration MCP Server");
         return ResponseEntity.ok(response);
     }
 }

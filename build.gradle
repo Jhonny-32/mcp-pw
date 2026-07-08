@@ -7,7 +7,7 @@ plugins {
 
 group = 'com.example'
 version = '0.0.1-SNAPSHOT'
-description = 'Basic calculator MCP service for beginners'
+description = 'MCP server for migrating Selenium WebDriver (Java) test projects to Playwright for Java'
 
 java {
 	toolchain {
@@ -50,4 +50,29 @@ dependencies {
 
 tasks.named('test') {
 	useJUnitPlatform()
+}
+
+// Equivalente Gradle del "./mvnw exec:java -Dexec.mainClass=...SDKClient" del tutorial
+// 03-GettingStarted/02-client (mcp-for-beginners): ejecuta el cliente MCP contra el
+// servidor local (debe estar corriendo: ./gradlew bootRun).
+// Uso: ./gradlew runSdkClient [-PscanPath=C:/ruta/al/proyecto-selenium]
+// Nota: NO usar 'projectPath' como nombre de la propiedad -P; colisiona con la
+// propiedad interna de Gradle Project.projectPath (":" para el proyecto raiz).
+tasks.register('runSdkClient', JavaExec) {
+	group = 'application'
+	description = 'Ejecuta el cliente MCP (SDKClient) contra el servidor en localhost:8081'
+	classpath = sourceSets.main.runtimeClasspath
+	mainClass = 'com.microsoft.mcp.sample.server.client.SDKClient'
+	if (project.hasProperty('scanPath')) {
+		args = [project.property('scanPath')]
+	}
+}
+
+// Agente LLM interactivo de migracion (requiere GITHUB_TOKEN y el servidor corriendo).
+tasks.register('runMigrationAgent', JavaExec) {
+	group = 'application'
+	description = 'Ejecuta el agente LLM interactivo de migracion contra el servidor en localhost:8081'
+	classpath = sourceSets.main.runtimeClasspath
+	mainClass = 'com.microsoft.mcp.sample.server.client.MigrationAgentClient'
+	standardInput = System.in
 }

@@ -24,9 +24,8 @@ import java.util.stream.Stream;
  * MCP tools that automate migrating a Selenium WebDriver (Java) test project to
  * Playwright for Java.
  *
- * <p>Design based on the {@code CalculatorService} architecture: every operation is a
- * method annotated with {@link Tool} that returns a structured summary (text or JSON)
- * as a String.
+ * <p>Every operation is a method annotated with {@link Tool} that returns a structured
+ * summary (text or JSON) as a String.
  *
  * <p>Principles applied (see prompts/mcp-selenium-to-playwright.md):
  * <ul>

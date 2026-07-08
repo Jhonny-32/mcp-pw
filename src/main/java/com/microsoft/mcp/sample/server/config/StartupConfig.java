@@ -11,7 +11,7 @@ public class StartupConfig {
     public CommandLineRunner startupInfo() {
         return args -> {
             System.out.println("\n" + "=".repeat(60));
-            System.out.println("Calculator MCP Server is starting...");
+            System.out.println("Selenium -> Playwright Migration MCP Server is starting...");
             System.out.println("SSE endpoint: http://localhost:8081/sse");
             System.out.println("Health check: http://localhost:8081/actuator/health");
             System.out.println("=".repeat(60) + "\n");
