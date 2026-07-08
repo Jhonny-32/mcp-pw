@@ -51,3 +51,13 @@ dependencies {
 tasks.named('test') {
 	useJUnitPlatform()
 }
+
+// Equivalente Gradle del "./mvnw exec:java -Dexec.mainClass=...SDKClient" del tutorial
+// 03-GettingStarted/02-client (mcp-for-beginners): ejecuta el cliente MCP contra el
+// servidor local (debe estar corriendo: ./gradlew bootRun).
+tasks.register('runSdkClient', JavaExec) {
+	group = 'application'
+	description = 'Ejecuta el cliente MCP (SDKClient) contra el servidor en localhost:8081'
+	classpath = sourceSets.main.runtimeClasspath
+	mainClass = 'com.microsoft.mcp.sample.server.client.SDKClient'
+}

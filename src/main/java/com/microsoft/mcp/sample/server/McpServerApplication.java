@@ -15,10 +15,10 @@ public class McpServerApplication {
 		SpringApplication.run(McpServerApplication.class, args);
 	}
 
-//	@Bean
-//	public ToolCallbackProvider calculatorTools(CalculatorService calculator){
-//		return MethodToolCallbackProvider.builder().toolObjects(calculator).build();
-//	}
+	@Bean
+	public ToolCallbackProvider calculatorTools(CalculatorService calculator){
+		return MethodToolCallbackProvider.builder().toolObjects(calculator).build();
+	}
 
 	@Bean
 	public ToolCallbackProvider migrationTools(MigrationService migration){
